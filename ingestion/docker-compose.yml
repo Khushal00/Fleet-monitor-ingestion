@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+
+  timescaledb:
+    image: timescale/timescaledb-ha:pg15
+    container_name: ingestion_timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fleet_user
+      POSTGRES_PASSWORD: fleet_password
+      POSTGRES_DB: fleet_monitor
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleet_user -d fleet_monitor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: ingestion_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  timescaledb_data:
+  redis_data:
