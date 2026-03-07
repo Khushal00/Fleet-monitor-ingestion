@@ -39,10 +39,11 @@ func main() {
 	step1_extensions(ctx, conn)
 	step2_telemetry_table(ctx, conn)
 	step3_alerts_table(ctx, conn)
-	step4_indexes(ctx, conn)
-	step5_verify(ctx, conn)
+	step4_registry_tables(ctx, conn)
+	step5_indexes(ctx, conn)
+	step6_verify(ctx, conn)
 
-	fmt.Println("\n✅ Database initialised successfully")
+	fmt.Println("\n Database initialised successfully")
 	fmt.Println("   Run next: go run scripts/seed_redis.go")
 }
 
@@ -149,7 +150,7 @@ func step3_alerts_table(ctx context.Context, conn *pgx.Conn) {
 
 			-- Alert classification
 			-- Must exactly match domain.AlertType constants:
-			-- SPEEDING | LOW_FUEL | ENGINE_OVERHEAT
+			-- SPEEDING | LOW_FUEL | ENGINE_OVERHEAT | ROUTE_DEVIATION
 			alert_type       TEXT             NOT NULL,
 
 			-- Must exactly match domain.AlertSeverity constants:
@@ -167,10 +168,16 @@ func step3_alerts_table(ctx context.Context, conn *pgx.Conn) {
 			acknowledged_at  TIMESTAMPTZ,
 			acknowledged_by  TEXT,
 
-			-- Constraint: alert_type must be one of the 3 valid values
-			-- Prevents garbage data entering the table
+			-- Operator resolution — separate from acknowledgment.
+			-- acknowledged_at = "I am handling this"
+			-- resolved_at     = "the condition is confirmed cleared"
+			resolved_at      TIMESTAMPTZ,
+			resolved_by      TEXT,
+
+			-- Constraint: alert_type must be one of the 4 valid values
+			-- ROUTE_DEVIATION is fired by the route deviation detector background job
 			CONSTRAINT chk_alert_type CHECK (
-				alert_type IN ('SPEEDING', 'LOW_FUEL', 'ENGINE_OVERHEAT')
+				alert_type IN ('SPEEDING', 'LOW_FUEL', 'ENGINE_OVERHEAT', 'ROUTE_DEVIATION')
 			),
 
 			-- Constraint: severity must be one of the 3 valid values
@@ -182,16 +189,151 @@ func step3_alerts_table(ctx context.Context, conn *pgx.Conn) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Step 4 — Indexes
+// Step 4 — Registry and trip tables
 // ─────────────────────────────────────────────────────────────
-func step4_indexes(ctx context.Context, conn *pgx.Conn) {
-	fmt.Println("\n── Step 4: Indexes ─────────────────────────────")
+// Order matters — tables with foreign keys must come after the
+// tables they reference:
+//
+//	vehicle_registry, driver_registry, route_registry  (no FKs)
+//	route_stops       → route_registry
+//	fleet_config      (no FKs)
+//	trip              → vehicle_registry, driver_registry, route_registry
+//	trip_stop_progress → trip, route_stops
+//
+// ─────────────────────────────────────────────────────────────
+func step4_registry_tables(ctx context.Context, conn *pgx.Conn) {
+	fmt.Println("\n── Step 4: Registry and trip tables ────────────")
+
+	// vehicle_registry — one row per physical truck.
+	// vehicle_id must match exactly the string the GPS device sends in telemetry.
+	// active=false retires a vehicle without deleting its telemetry history.
+	execOrFatal(ctx, conn, `
+		CREATE TABLE IF NOT EXISTS vehicle_registry (
+			vehicle_id          TEXT             PRIMARY KEY,
+			fleet_id            TEXT             NOT NULL,
+			display_name        TEXT             NOT NULL,
+			registration_number TEXT             NOT NULL,
+			vehicle_type        TEXT             NOT NULL,
+			capacity_tonnes     NUMERIC,
+			manufacture_year    INT,
+			active              BOOLEAN          NOT NULL DEFAULT true
+		);
+	`, "vehicle_registry table created")
+
+	// driver_registry — one row per driver.
+	// Drivers are assigned to vehicles per trip, not permanently.
+	// phone_number is exposed in the drill-down panel so the operations
+	// manager can call directly from the dashboard.
+	execOrFatal(ctx, conn, `
+		CREATE TABLE IF NOT EXISTS driver_registry (
+			driver_id       TEXT    PRIMARY KEY,
+			full_name       TEXT    NOT NULL,
+			phone_number    TEXT    NOT NULL,
+			license_number  TEXT    NOT NULL,
+			license_expiry  DATE    NOT NULL,
+			active          BOOLEAN NOT NULL DEFAULT true
+		);
+	`, "driver_registry table created")
+
+	// route_registry — reusable route templates.
+	// A route defines origin, destination, and corridor.
+	// corridor_radius_km controls how far off the polyline before a
+	// ROUTE_DEVIATION alert fires.
+	execOrFatal(ctx, conn, `
+		CREATE TABLE IF NOT EXISTS route_registry (
+			route_id             TEXT             PRIMARY KEY,
+			route_name           TEXT             NOT NULL,
+			origin_name          TEXT             NOT NULL,
+			origin_lat           DOUBLE PRECISION NOT NULL,
+			origin_lng           DOUBLE PRECISION NOT NULL,
+			destination_name     TEXT             NOT NULL,
+			destination_lat      DOUBLE PRECISION NOT NULL,
+			destination_lng      DOUBLE PRECISION NOT NULL,
+			corridor_radius_km   NUMERIC          NOT NULL DEFAULT 25,
+			total_distance_km    NUMERIC,
+			active               BOOLEAN          NOT NULL DEFAULT true
+		);
+	`, "route_registry table created")
+
+	// route_stops — ordered stops along a route.
+	// stop_sequence is 1-based; the destination is the final stop.
+	// arrival_radius_km: vehicle within this distance = counted as arrived.
+	execOrFatal(ctx, conn, `
+		CREATE TABLE IF NOT EXISTS route_stops (
+			stop_id           TEXT             PRIMARY KEY,
+			route_id          TEXT             NOT NULL REFERENCES route_registry(route_id),
+			stop_sequence     INT              NOT NULL,
+			stop_name         TEXT             NOT NULL,
+			lat               DOUBLE PRECISION NOT NULL,
+			lng               DOUBLE PRECISION NOT NULL,
+			arrival_radius_km NUMERIC          NOT NULL DEFAULT 1
+		);
+	`, "route_stops table created")
+
+	// fleet_config — per-fleet operational config.
+	// staleness_threshold_seconds: how long a vehicle can go silent before
+	// the heartbeat monitor marks it offline. Default 60s.
+	execOrFatal(ctx, conn, `
+		CREATE TABLE IF NOT EXISTS fleet_config (
+			fleet_id                    TEXT PRIMARY KEY,
+			staleness_threshold_seconds INT  NOT NULL DEFAULT 60
+		);
+	`, "fleet_config table created")
+
+	// trip — a specific instance of a vehicle + driver + route.
+	// This is the central entity that ties everything together for
+	// the stop detector, deviation detector, and ETA estimator.
+	execOrFatal(ctx, conn, `
+		CREATE TABLE IF NOT EXISTS trip (
+			trip_id              TEXT        PRIMARY KEY,
+			vehicle_id           TEXT        NOT NULL REFERENCES vehicle_registry(vehicle_id),
+			driver_id            TEXT        NOT NULL REFERENCES driver_registry(driver_id),
+			route_id             TEXT        NOT NULL REFERENCES route_registry(route_id),
+			status               TEXT        NOT NULL DEFAULT 'SCHEDULED',
+			scheduled_departure  TIMESTAMPTZ NOT NULL,
+			actual_departure     TIMESTAMPTZ,
+			completed_at         TIMESTAMPTZ,
+			created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+			-- status must be one of the 4 lifecycle values
+			CONSTRAINT chk_trip_status CHECK (
+				status IN ('SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED')
+			)
+		);
+	`, "trip table created")
+
+	// trip_stop_progress — live scratchpad written by the stop detector job.
+	// One row per (trip, stop) pair, initialised as PENDING when a trip starts.
+	// Composite PK prevents duplicate rows for the same trip+stop.
+	execOrFatal(ctx, conn, `
+		CREATE TABLE IF NOT EXISTS trip_stop_progress (
+			trip_id     TEXT        NOT NULL REFERENCES trip(trip_id),
+			stop_id     TEXT        NOT NULL REFERENCES route_stops(stop_id),
+			status      TEXT        NOT NULL DEFAULT 'PENDING',
+			arrived_at  TIMESTAMPTZ,
+			departed_at TIMESTAMPTZ,
+
+			PRIMARY KEY (trip_id, stop_id),
+
+			CONSTRAINT chk_stop_status CHECK (
+				status IN ('PENDING', 'ARRIVED', 'DEPARTED', 'MISSED')
+			)
+		);
+	`, "trip_stop_progress table created")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Step 5 — Indexes
+// ─────────────────────────────────────────────────────────────
+func step5_indexes(ctx context.Context, conn *pgx.Conn) {
+	fmt.Println("\n── Step 5: Indexes ─────────────────────────────")
 
 	indexes := []struct {
 		name string
 		sql  string
 		why  string
 	}{
+		// ── vehicle_telemetry ────────────────────────────────────────
 		{
 			name: "idx_telemetry_vehicle_time",
 			sql: `CREATE INDEX IF NOT EXISTS idx_telemetry_vehicle_time
@@ -210,6 +352,8 @@ func step4_indexes(ctx context.Context, conn *pgx.Conn) {
 				  ON vehicle_telemetry USING GIST (location);`,
 			why: "query: vehicles near a lat/lng (ST_DWithin)",
 		},
+
+		// ── vehicle_alerts ───────────────────────────────────────────
 		{
 			name: "idx_alerts_vehicle",
 			sql: `CREATE INDEX IF NOT EXISTS idx_alerts_vehicle
@@ -229,6 +373,36 @@ func step4_indexes(ctx context.Context, conn *pgx.Conn) {
 				  WHERE acknowledged_at IS NULL;`,
 			why: "query: unacknowledged alerts only (partial index)",
 		},
+
+		// ── route_stops ──────────────────────────────────────────────
+		{
+			name: "idx_route_stops_route",
+			sql: `CREATE INDEX IF NOT EXISTS idx_route_stops_route
+				  ON route_stops (route_id, stop_sequence);`,
+			why: "query: all stops for a route in order",
+		},
+
+		// ── trip ─────────────────────────────────────────────────────
+		{
+			name: "idx_trip_vehicle",
+			sql: `CREATE INDEX IF NOT EXISTS idx_trip_vehicle
+				  ON trip (vehicle_id, status);`,
+			why: "query: active trip for a vehicle (drill-down panel, stop detector)",
+		},
+		{
+			name: "idx_trip_fleet_status",
+			sql: `CREATE INDEX IF NOT EXISTS idx_trip_fleet_status
+				  ON trip (route_id, status);`,
+			why: "query: all in-progress trips (stop detector, deviation detector)",
+		},
+
+		// ── trip_stop_progress ───────────────────────────────────────
+		{
+			name: "idx_trip_stop_progress_trip",
+			sql: `CREATE INDEX IF NOT EXISTS idx_trip_stop_progress_trip
+				  ON trip_stop_progress (trip_id, status);`,
+			why: "query: pending stops for a trip (stop detector)",
+		},
 	}
 
 	for _, idx := range indexes {
@@ -239,13 +413,23 @@ func step4_indexes(ctx context.Context, conn *pgx.Conn) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Step 5 — Verify everything was created
+// Step 6 — Verify everything was created
 // ─────────────────────────────────────────────────────────────
-func step5_verify(ctx context.Context, conn *pgx.Conn) {
-	fmt.Println("\n── Step 5: Verification ────────────────────────")
+func step6_verify(ctx context.Context, conn *pgx.Conn) {
+	fmt.Println("\n── Step 6: Verification ────────────────────────")
 
-	// Check tables exist
-	tables := []string{"vehicle_telemetry", "vehicle_alerts"}
+	// Check all tables exist
+	tables := []string{
+		"vehicle_telemetry",
+		"vehicle_alerts",
+		"vehicle_registry",
+		"driver_registry",
+		"route_registry",
+		"route_stops",
+		"fleet_config",
+		"trip",
+		"trip_stop_progress",
+	}
 	for _, table := range tables {
 		var exists bool
 		err := conn.QueryRow(ctx, `
@@ -272,12 +456,15 @@ func step5_verify(ctx context.Context, conn *pgx.Conn) {
 	}
 	fmt.Printf("  ✓ hypertable: %s (time partitioned)\n", hypertableName)
 
-	// Check indexes
+	// Check indexes across all relevant tables
 	var indexCount int
 	err = conn.QueryRow(ctx, `
 		SELECT COUNT(*)
 		FROM pg_indexes
-		WHERE tablename IN ('vehicle_telemetry', 'vehicle_alerts')
+		WHERE tablename IN (
+			'vehicle_telemetry', 'vehicle_alerts',
+			'route_stops', 'trip', 'trip_stop_progress'
+		)
 		AND indexname LIKE 'idx_%'
 	`).Scan(&indexCount)
 	if err != nil {

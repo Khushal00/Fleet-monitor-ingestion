@@ -66,18 +66,12 @@ func (r *RedisStore) PipelineStateUpdate(ctx context.Context, msg *domain.Teleme
 	}
 
 	vehicleStateKey := fmt.Sprintf("vehicle:%s:state", msg.VehicleID)
-	geoKey := fmt.Sprintf("fleet:%s:geo", msg.FleetID)
 	pubChannel := fmt.Sprintf("fleet:%s:telemetry", msg.FleetID)
 
 	pipe := r.client.Pipeline()
 
 	pipe.HSet(ctx, vehicleStateKey, stateData)
 	pipe.Expire(ctx, vehicleStateKey, 30*time.Second)
-	pipe.GeoAdd(ctx, geoKey, &redis.GeoLocation{
-		Name:      msg.VehicleID,
-		Longitude: msg.Longitude,
-		Latitude:  msg.Latitude,
-	})
 	pipe.Publish(ctx, pubChannel, pubPayload)
 
 	_, err = pipe.Exec(ctx)
