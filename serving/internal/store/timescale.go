@@ -44,3 +44,7 @@ func (s *TimescaleStore) Ping(ctx context.Context) error {
 func (s *TimescaleStore) Close() {
 	s.pool.Close()
 }
+
+func (s *TimescaleStore) Pool() *pgxpool.Pool {
+	return s.pool
+}

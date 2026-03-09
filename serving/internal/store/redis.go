@@ -36,3 +36,7 @@ func (r *RedisStore) Ping(ctx context.Context) error {
 func (r *RedisStore) Close() error {
 	return r.client.Close()
 }
+
+func (r *RedisStore) Client() *redis.Client {
+	return r.client
+}
