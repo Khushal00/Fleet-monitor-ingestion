@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,9 +12,12 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"fleet-monitor/serving/internal/auth"
 	"fleet-monitor/serving/internal/config"
 	"fleet-monitor/serving/internal/handler"
+	"fleet-monitor/serving/internal/middleware"
 	"fleet-monitor/serving/internal/store"
+	"fleet-monitor/serving/internal/ws"
 )
 
 func main() {
@@ -24,7 +28,6 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	// --- Stores ---
 	tsStore, err := store.NewTimescaleStore(ctx, cfg)
 	if err != nil {
 		log.Fatalf("TimescaleDB: %v", err)
@@ -39,40 +42,72 @@ func main() {
 	defer redisStore.Close()
 	fmt.Println("✓ Redis connected")
 
-	// --- Handlers ---
+	authenticator := auth.NewAuthenticator(auth.Config{
+		ValidAPIKeys:    cfg.ValidAPIKeys,
+		CacheTTLSeconds: cfg.AuthCacheTTLSeconds,
+	}, redisStore.Client())
+	fmt.Println("✓ Authenticator ready")
+
+	authMW := middleware.Auth(authenticator)
+
+	hub := ws.NewHub(redisStore.Client(), authenticator)
+	go hub.Run(ctx)
+	fmt.Println("✓ WebSocket hub started")
+
 	healthHandler    := handler.NewHealthHandler(tsStore, redisStore)
 	analyticsHandler := handler.NewAnalyticsHandler(redisStore.Client(), tsStore.Pool())
 	vehicleHandler   := handler.NewVehicleHandler(redisStore.Client(), tsStore.Pool())
 	alertHandler     := handler.NewAlertHandler(redisStore.Client(), tsStore.Pool())
 	tripHandler      := handler.NewTripHandler(redisStore.Client(), tsStore.Pool())
 
-	// --- Routes ---
 	mux := http.NewServeMux()
 
-	// Health
 	mux.HandleFunc("GET /health", healthHandler.Handle)
+	mux.HandleFunc("GET /ws", hub.ServeWS)
 
-	// Analytics
-	mux.HandleFunc("GET /api/v1/analytics/summary", analyticsHandler.HandleSummary)
+	mux.Handle("GET /api/v1/whoami",
+		authMW(http.HandlerFunc(whoamiHandler)),
+	)
+	mux.Handle("GET /api/v1/fleet/{fleet_id}/ping",
+		authMW(
+			middleware.FleetScoped("fleet_id")(
+				http.HandlerFunc(fleetPingHandler),
+			),
+		),
+	)
 
-	// Vehicle
-	mux.HandleFunc("GET /api/v1/vehicles/{vehicle_id}/panel",        vehicleHandler.HandlePanel)
-	mux.HandleFunc("GET /api/v1/vehicles/{vehicle_id}/active-trip",  vehicleHandler.HandleActiveTrip)
-	mux.HandleFunc("GET /api/v1/vehicles/{vehicle_id}/alerts",       vehicleHandler.HandleVehicleAlerts)
+	mux.Handle("GET /api/v1/analytics/summary",
+		authMW(http.HandlerFunc(analyticsHandler.HandleSummary)))
 
-	// Alerts
-	mux.HandleFunc("GET  /api/v1/alerts",                                alertHandler.HandleAttentionQueue)
-	mux.HandleFunc("GET  /api/v1/alerts/{alert_id}",                     alertHandler.HandleAlertDetail)
-	mux.HandleFunc("POST /api/v1/alerts/{alert_id}/acknowledge",         alertHandler.HandleAcknowledge)
-	mux.HandleFunc("POST /api/v1/alerts/{alert_id}/resolve",             alertHandler.HandleResolve)
-	mux.HandleFunc("POST /api/v1/alerts/{alert_id}/unacknowledge",       alertHandler.HandleUnacknowledge)
-	mux.HandleFunc("GET  /api/v1/fleet/{fleet_id}/alerts",               alertHandler.HandleFleetAlertHistory)
+	mux.Handle("GET /api/v1/vehicles/{vehicle_id}/panel",
+		authMW(http.HandlerFunc(vehicleHandler.HandlePanel)))
+	mux.Handle("GET /api/v1/vehicles/{vehicle_id}/active-trip",
+		authMW(http.HandlerFunc(vehicleHandler.HandleActiveTrip)))
+	mux.Handle("GET /api/v1/vehicles/{vehicle_id}/alerts",
+		authMW(http.HandlerFunc(vehicleHandler.HandleVehicleAlerts)))
 
-	// Trips
-	mux.HandleFunc("GET /api/v1/trips",             tripHandler.HandleList)
-	mux.HandleFunc("GET /api/v1/trips/{trip_id}",   tripHandler.HandleDetail)
+	mux.Handle("GET /api/v1/alerts",
+		authMW(http.HandlerFunc(alertHandler.HandleAttentionQueue)))
+	mux.Handle("GET /api/v1/alerts/{alert_id}",
+		authMW(http.HandlerFunc(alertHandler.HandleAlertDetail)))
+	mux.Handle("POST /api/v1/alerts/{alert_id}/acknowledge",
+		authMW(http.HandlerFunc(alertHandler.HandleAcknowledge)))
+	mux.Handle("POST /api/v1/alerts/{alert_id}/resolve",
+		authMW(http.HandlerFunc(alertHandler.HandleResolve)))
+	mux.Handle("POST /api/v1/alerts/{alert_id}/unacknowledge",
+		authMW(http.HandlerFunc(alertHandler.HandleUnacknowledge)))
+	mux.Handle("GET /api/v1/fleet/{fleet_id}/alerts",
+		authMW(
+			middleware.FleetScoped("fleet_id")(
+				http.HandlerFunc(alertHandler.HandleFleetAlertHistory),
+			),
+		))
 
-	// --- HTTP Server ---
+	mux.Handle("GET /api/v1/trips",
+		authMW(http.HandlerFunc(tripHandler.HandleList)))
+	mux.Handle("GET /api/v1/trips/{trip_id}",
+		authMW(http.HandlerFunc(tripHandler.HandleDetail)))
+
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
 		Handler: mux,
@@ -85,7 +120,6 @@ func main() {
 		}
 	}()
 
-	// --- Wait for shutdown signal ---
 	<-ctx.Done()
 	fmt.Println("\nShutting down...")
 
@@ -97,4 +131,30 @@ func main() {
 	}
 
 	fmt.Println("Done.")
+}
+
+func whoamiHandler(w http.ResponseWriter, r *http.Request) {
+	apiKey  := middleware.APIKeyFromContext(r.Context())
+	fleetID := middleware.FleetIDFromContext(r.Context())
+
+	keySource := "redis"
+	if fleetID == "" {
+		keySource = "static_config"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"api_key":    apiKey,
+		"fleet_id":   fleetID,
+		"key_source": keySource,
+		"message":    "auth passed",
+	})
+}
+
+func fleetPingHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"fleet_id": r.PathValue("fleet_id"),
+		"message":  "fleet access authorised",
+	})
 }

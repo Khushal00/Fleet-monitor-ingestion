@@ -24,7 +24,8 @@ type Config struct {
 	RedisDB       int
 
 	// Auth
-	ValidAPIKeys []string
+	ValidAPIKeys        []string
+	AuthCacheTTLSeconds int
 
 	// Background jobs
 	HeartbeatIntervalSeconds         int
@@ -47,7 +48,8 @@ func Load() *Config {
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 		RedisDB:       getEnvInt("REDIS_DB", 0),
 
-		ValidAPIKeys: strings.Split(getEnv("VALID_API_KEYS", ""), ","),
+		ValidAPIKeys:        strings.Split(getEnv("VALID_API_KEYS", ""), ","),
+		AuthCacheTTLSeconds: getEnvInt("AUTH_CACHE_TTL_SECONDS", 300),
 
 		HeartbeatIntervalSeconds:         getEnvInt("HEARTBEAT_INTERVAL_SECONDS", 30),
 		StalenessThresholdSeconds:        getEnvInt("STALENESS_THRESHOLD_SECONDS", 60),
