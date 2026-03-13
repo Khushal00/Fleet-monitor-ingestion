@@ -15,6 +15,7 @@ import (
 	"fleet-monitor/serving/internal/auth"
 	"fleet-monitor/serving/internal/config"
 	"fleet-monitor/serving/internal/handler"
+	"fleet-monitor/serving/internal/jobs"
 	"fleet-monitor/serving/internal/middleware"
 	"fleet-monitor/serving/internal/store"
 	"fleet-monitor/serving/internal/ws"
@@ -53,6 +54,34 @@ func main() {
 	hub := ws.NewHub(redisStore.Client(), authenticator)
 	go hub.Run(ctx)
 	fmt.Println("✓ WebSocket hub started")
+
+	// ── Background jobs ───────────────────────────────────────────────────────
+
+	go jobs.NewHeartbeatMonitor(
+		redisStore.Client(), tsStore.Pool(), hub,
+		cfg.HeartbeatIntervalSeconds, cfg.StalenessThresholdSeconds,
+	).Run(ctx)
+	fmt.Println("✓ Heartbeat monitor started")
+
+	go jobs.NewDeviationDetector(
+		redisStore.Client(), tsStore.Pool(), hub,
+		cfg.DeviationDetectorIntervalSeconds,
+	).Run(ctx)
+	fmt.Println("✓ Deviation detector started")
+
+	go jobs.NewStopDetector(
+		redisStore.Client(), tsStore.Pool(), hub,
+		cfg.StopDetectorIntervalSeconds,
+	).Run(ctx)
+	fmt.Println("✓ Stop detector started")
+
+	go jobs.NewETAEstimator(
+		redisStore.Client(), tsStore.Pool(),
+		cfg.StopDetectorIntervalSeconds,
+	).Run(ctx)
+	fmt.Println("✓ ETA estimator started")
+
+	// ── Handlers ─────────────────────────────────────────────────────────────
 
 	healthHandler    := handler.NewHealthHandler(tsStore, redisStore)
 	analyticsHandler := handler.NewAnalyticsHandler(redisStore.Client(), tsStore.Pool())
