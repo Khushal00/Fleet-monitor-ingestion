@@ -53,9 +53,10 @@ func (w *StateWriter) Run(ctx context.Context) {
 }
 
 func (w *StateWriter) flushBatch(ctx context.Context, batch []*domain.TelemetryMessage) {
-	for _, msg := range batch {
-		if err := w.redis.PipelineStateUpdate(ctx, msg); err != nil {
-			fmt.Printf("Redis state update failed for %s: %v\n", msg.VehicleID, err)
-		}
+	if len(batch) == 0 {
+		return
+	}
+	if err := w.redis.PipelineStateUpdates(ctx, batch); err != nil {
+		fmt.Printf("Redis state update failed for batch=%d: %v\n", len(batch), err)
 	}
 }

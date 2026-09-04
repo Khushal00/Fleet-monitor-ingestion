@@ -45,38 +45,34 @@ func (r *RedisStore) Client() *redis.Client {
 }
 
 func (r *RedisStore) PipelineStateUpdate(ctx context.Context, msg *domain.TelemetryMessage) error {
-	stateData := map[string]interface{}{
-		"vehicle_id":  msg.VehicleID,
-		"fleet_id":    msg.FleetID,
-		"lat":         msg.Latitude,
-		"lng":         msg.Longitude,
-		"speed_kmh":   msg.SpeedKmh,
-		"fuel_pct":    msg.FuelPct,
-		"engine_temp": msg.EngineTempC,
-		"battery":     msg.BatteryVoltage,
-		"is_moving":   msg.IsMoving,
-		"engine_on":   msg.EngineOn,
-		"timestamp":   msg.Timestamp.Unix(),
-		"received_at": msg.ReceivedAt.Unix(),
-	}
+	return r.PipelineStateUpdates(ctx, []*domain.TelemetryMessage{msg})
+}
 
-	pubPayload, err := json.Marshal(stateData)
-	if err != nil {
-		return fmt.Errorf("failed to marshal state: %w", err)
-	}
-
-	vehicleStateKey := fmt.Sprintf("vehicle:%s:state", msg.VehicleID)
-	pubChannel := fmt.Sprintf("fleet:%s:telemetry", msg.FleetID)
-
+// PipelineStateUpdates writes and publishes a complete state batch with one
+// Redis pipeline execution, rather than one network round trip per message.
+func (r *RedisStore) PipelineStateUpdates(ctx context.Context, msgs []*domain.TelemetryMessage) error {
 	pipe := r.client.Pipeline()
+	for _, msg := range msgs {
+		stateData := map[string]interface{}{
+			"vehicle_id": msg.VehicleID, "fleet_id": msg.FleetID,
+			"lat": msg.Latitude, "lng": msg.Longitude,
+			"speed_kmh": msg.SpeedKmh, "fuel_pct": msg.FuelPct,
+			"engine_temp": msg.EngineTempC, "battery": msg.BatteryVoltage,
+			"is_moving": msg.IsMoving, "engine_on": msg.EngineOn,
+			"timestamp": msg.Timestamp.Unix(), "received_at": msg.ReceivedAt.Unix(),
+		}
+		pubPayload, err := json.Marshal(stateData)
+		if err != nil {
+			return fmt.Errorf("marshal state for %s: %w", msg.VehicleID, err)
+		}
+		pipe.HSet(ctx, fmt.Sprintf("vehicle:%s:state", msg.VehicleID), stateData)
+		pipe.Expire(ctx, fmt.Sprintf("vehicle:%s:state", msg.VehicleID), 30*time.Second)
+		pipe.Publish(ctx, fmt.Sprintf("fleet:%s:telemetry", msg.FleetID), pubPayload)
+	}
 
-	pipe.HSet(ctx, vehicleStateKey, stateData)
-	pipe.Expire(ctx, vehicleStateKey, 30*time.Second)
-	pipe.Publish(ctx, pubChannel, pubPayload)
-
-	_, err = pipe.Exec(ctx)
+	_, err := pipe.Exec(ctx)
 	if err != nil {
-		return fmt.Errorf("redis pipeline failed: %w", err)
+		return fmt.Errorf("redis state pipeline failed: %w", err)
 	}
 
 	return nil

@@ -7,12 +7,13 @@ import (
 )
 
 var (
-	MessagesReceived  atomic.Int64
-	DBWriteSuccess    atomic.Int64
-	DBWriteFailures   atomic.Int64
-	DBChannelDrops    atomic.Int64
-	StateChannelDrops atomic.Int64
-	AlertChannelDrops atomic.Int64
+	MessagesReceived   atomic.Int64
+	DBWriteSuccess     atomic.Int64
+	DBWriteFailures    atomic.Int64
+	DBChannelDrops     atomic.Int64
+	StateChannelDrops  atomic.Int64
+	AlertChannelDrops  atomic.Int64
+	DBDispatchRejected atomic.Int64
 )
 
 func HandleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -23,4 +24,5 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "ingestion_db_channel_drops_total %d\n", DBChannelDrops.Load())
 	fmt.Fprintf(w, "ingestion_state_channel_drops_total %d\n", StateChannelDrops.Load())
 	fmt.Fprintf(w, "ingestion_alert_channel_drops_total %d\n", AlertChannelDrops.Load())
+	fmt.Fprintf(w, "ingestion_db_dispatch_rejected_total %d\n", DBDispatchRejected.Load())
 }

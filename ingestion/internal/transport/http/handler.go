@@ -72,7 +72,12 @@ func (h *TelemetryHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		RawPayload:     raw,
 	}
 
-	h.dispatcher.Dispatch(msg)
+	if !h.dispatcher.Dispatch(msg) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"telemetry pipeline is unavailable; retry the request"}`))
+		return
+	}
 	metrics.MessagesReceived.Add(1)
 
 	w.Header().Set("Content-Type", "application/json")

@@ -48,6 +48,7 @@ func main() {
 		cfg.AlertChannelSize,
 	)
 	fmt.Println("✓ Dispatcher created")
+	go dispatcher.Run(ctx)
 
 	for i := 0; i < cfg.DBWriterWorkers; i++ {
 		w := pipeline.NewDBWriter(dispatcher.DBChan, tsStore, cfg.DBBatchSize, cfg.DBFlushIntervalMS)
