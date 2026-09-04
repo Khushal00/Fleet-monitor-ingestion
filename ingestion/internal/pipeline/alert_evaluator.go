@@ -12,9 +12,19 @@ import (
 
 type AlertEvaluator struct {
 	ch    <-chan *domain.TelemetryMessage
-	db    *store.TimescaleStore
-	redis *store.RedisStore
+	db    alertStore
+	redis alertDedupStore
 	rules []domain.AlertRule
+}
+
+type alertStore interface {
+	InsertAlert(context.Context, string, string, domain.AlertType, domain.AlertSeverity, float64) error
+}
+
+type alertDedupStore interface {
+	TryClaimAlertDedup(context.Context, string, domain.AlertType) (bool, error)
+	ReleaseAlertDedup(context.Context, string, domain.AlertType) error
+	PublishAlert(context.Context, string, []byte) error
 }
 
 func NewAlertEvaluator(
@@ -65,6 +75,9 @@ func (e *AlertEvaluator) evaluate(ctx context.Context, msg *domain.TelemetryMess
 		err = e.db.InsertAlert(ctx, msg.VehicleID, msg.FleetID, rule.Type, rule.Severity, triggerValue)
 		if err != nil {
 			fmt.Printf("Alert insert failed for %s: %v\n", msg.VehicleID, err)
+			if releaseErr := e.redis.ReleaseAlertDedup(ctx, msg.VehicleID, rule.Type); releaseErr != nil {
+				fmt.Printf("Alert dedup release failed for %s/%s: %v\n", msg.VehicleID, rule.Type, releaseErr)
+			}
 			continue
 		}
 

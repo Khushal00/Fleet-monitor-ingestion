@@ -101,6 +101,16 @@ func (r *RedisStore) TryClaimAlertDedup(ctx context.Context, vehicleID string, a
 	return claimed, nil
 }
 
+// ReleaseAlertDedup removes a previously claimed deduplication key so a
+// transient failure before persistence does not suppress the alert for the TTL.
+func (r *RedisStore) ReleaseAlertDedup(ctx context.Context, vehicleID string, alertType domain.AlertType) error {
+	key := fmt.Sprintf("alert:%s:%s", vehicleID, string(alertType))
+	if err := r.client.Del(ctx, key).Err(); err != nil {
+		return fmt.Errorf("release alert dedup window: %w", err)
+	}
+	return nil
+}
+
 func (r *RedisStore) PublishAlert(ctx context.Context, fleetID string, payload []byte) error {
 	channel := fmt.Sprintf("fleet:%s:alerts", fleetID)
 	return r.client.Publish(ctx, channel, payload).Err()
