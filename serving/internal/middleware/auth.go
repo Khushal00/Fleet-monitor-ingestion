@@ -67,7 +67,7 @@ func FleetScoped(fleetIDParam string) func(http.Handler) http.Handler {
 
 			keyFleet := FleetIDFromContext(r.Context())
 
-			if keyFleet != "" && keyFleet != requestedFleet {
+			if keyFleet == "" || keyFleet != requestedFleet {
 				writeError(w, http.StatusForbidden,
 					"API key is not authorised for fleet "+requestedFleet)
 				return
