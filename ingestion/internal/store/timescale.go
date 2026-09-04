@@ -113,7 +113,7 @@ func (s *TimescaleStore) InsertAlert(
 			(vehicle_id, fleet_id, alert_type, severity, triggered_value, created_at)
 		VALUES
 			($1, $2, $3, $4, $5, NOW())
-		ON CONFLICT DO NOTHING
+		ON CONFLICT ON CONSTRAINT vehicle_alerts_dedup_window_excl DO NOTHING
 	`
 	_, err := s.pool.Exec(
 		ctx,

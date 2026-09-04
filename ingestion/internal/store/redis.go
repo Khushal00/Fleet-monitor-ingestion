@@ -90,18 +90,15 @@ func (r *RedisStore) GetAPIKey(ctx context.Context, apiKey string) (string, erro
 	return val, nil
 }
 
-func (r *RedisStore) CheckAlertDedup(ctx context.Context, vehicleID string, alertType domain.AlertType) (bool, error) {
+// TryClaimAlertDedup atomically claims an alert's five-minute deduplication
+// window. A true result means this caller owns the alert and may persist it.
+func (r *RedisStore) TryClaimAlertDedup(ctx context.Context, vehicleID string, alertType domain.AlertType) (bool, error) {
 	key := fmt.Sprintf("alert:%s:%s", vehicleID, string(alertType))
-	count, err := r.client.Exists(ctx, key).Result()
+	claimed, err := r.client.SetNX(ctx, key, "1", 5*time.Minute).Result()
 	if err != nil {
-		return false, fmt.Errorf("dedup check failed: %w", err)
+		return false, fmt.Errorf("claim alert dedup window: %w", err)
 	}
-	return count > 0, nil
-}
-
-func (r *RedisStore) SetAlertDedup(ctx context.Context, vehicleID string, alertType domain.AlertType) error {
-	key := fmt.Sprintf("alert:%s:%s", vehicleID, string(alertType))
-	return r.client.Set(ctx, key, "1", 5*time.Minute).Err()
+	return claimed, nil
 }
 
 func (r *RedisStore) PublishAlert(ctx context.Context, fleetID string, payload []byte) error {

@@ -51,12 +51,12 @@ func (e *AlertEvaluator) evaluate(ctx context.Context, msg *domain.TelemetryMess
 			continue
 		}
 
-		isDuplicate, err := e.redis.CheckAlertDedup(ctx, msg.VehicleID, rule.Type)
+		claimed, err := e.redis.TryClaimAlertDedup(ctx, msg.VehicleID, rule.Type)
 		if err != nil {
-			fmt.Printf("Alert dedup check failed for %s/%s: %v\n", msg.VehicleID, rule.Type, err)
+			fmt.Printf("Alert dedup claim failed for %s/%s: %v\n", msg.VehicleID, rule.Type, err)
 			continue
 		}
-		if isDuplicate {
+		if !claimed {
 			continue
 		}
 
@@ -66,10 +66,6 @@ func (e *AlertEvaluator) evaluate(ctx context.Context, msg *domain.TelemetryMess
 		if err != nil {
 			fmt.Printf("Alert insert failed for %s: %v\n", msg.VehicleID, err)
 			continue
-		}
-
-		if err := e.redis.SetAlertDedup(ctx, msg.VehicleID, rule.Type); err != nil {
-			fmt.Printf("Alert dedup set failed for %s: %v\n", msg.VehicleID, err)
 		}
 
 		alertPayload, _ := json.Marshal(map[string]interface{}{

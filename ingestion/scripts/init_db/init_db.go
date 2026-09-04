@@ -137,6 +137,8 @@ func step2_telemetry_table(ctx context.Context, conn *pgx.Conn) {
 func step3_alerts_table(ctx context.Context, conn *pgx.Conn) {
 	fmt.Println("\n── Step 3: vehicle_alerts table ────────────────")
 
+	execOrFatal(ctx, conn, "CREATE EXTENSION IF NOT EXISTS btree_gist;", "btree_gist extension enabled")
+
 	execOrFatal(ctx, conn, `
 		CREATE TABLE IF NOT EXISTS vehicle_alerts (
 
@@ -186,6 +188,28 @@ func step3_alerts_table(ctx context.Context, conn *pgx.Conn) {
 			)
 		);
 	`, "vehicle_alerts table created")
+
+	// A rolling time-window exclusion constraint exactly matches the Redis TTL:
+	// rows for one vehicle/type cannot overlap in [created_at, created_at + 5m).
+	// Unlike a permanent unique key, it permits a legitimate re-alert after five
+	// minutes without changing alert business rules.
+	execOrFatal(ctx, conn, `
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'vehicle_alerts_dedup_window_excl'
+			) THEN
+				ALTER TABLE vehicle_alerts
+					ADD CONSTRAINT vehicle_alerts_dedup_window_excl
+					EXCLUDE USING gist (
+						vehicle_id WITH =,
+						alert_type WITH =,
+						tsrange(created_at AT TIME ZONE 'UTC', (created_at AT TIME ZONE 'UTC') + INTERVAL '5 minutes', '[)') WITH &&
+					);
+			END IF;
+		END $$;
+	`, "vehicle_alerts rolling deduplication constraint created")
 }
 
 // ─────────────────────────────────────────────────────────────
