@@ -25,7 +25,7 @@ func NewDeviationDetector(rc *redis.Client, db *pgxpool.Pool, hub *ws.Hub, inter
 		redis:    rc,
 		db:       db,
 		hub:      hub,
-		interval: time.Duration(intervalSec) * time.Second,
+		interval: intervalFromSeconds(intervalSec),
 	}
 }
 

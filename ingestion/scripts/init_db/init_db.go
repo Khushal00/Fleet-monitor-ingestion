@@ -189,6 +189,25 @@ func step3_alerts_table(ctx context.Context, conn *pgx.Conn) {
 		);
 	`, "vehicle_alerts table created")
 
+	// Older deployments created chk_alert_type before ROUTE_DEVIATION existed.
+	// Replace only that legacy definition so serving's deviation detector can
+	// persist its documented alert type.
+	execOrFatal(ctx, conn, `
+		DO $$
+		DECLARE definition TEXT;
+		BEGIN
+			SELECT pg_get_constraintdef(oid) INTO definition
+			FROM pg_constraint
+			WHERE conrelid = 'vehicle_alerts'::regclass AND conname = 'chk_alert_type';
+			IF definition IS NOT NULL AND definition NOT LIKE '%ROUTE_DEVIATION%' THEN
+				ALTER TABLE vehicle_alerts DROP CONSTRAINT chk_alert_type;
+				ALTER TABLE vehicle_alerts ADD CONSTRAINT chk_alert_type CHECK (
+					alert_type IN ('SPEEDING', 'LOW_FUEL', 'ENGINE_OVERHEAT', 'ROUTE_DEVIATION')
+				);
+			END IF;
+		END $$;
+	`, "vehicle_alerts route-deviation constraint migrated")
+
 	// A rolling time-window exclusion constraint exactly matches the Redis TTL:
 	// rows for one vehicle/type cannot overlap in [created_at, created_at + 5m).
 	// Unlike a permanent unique key, it permits a legitimate re-alert after five

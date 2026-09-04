@@ -21,7 +21,7 @@ func NewETAEstimator(rc *redis.Client, db *pgxpool.Pool, intervalSec int) *ETAEs
 	return &ETAEstimator{
 		redis:    rc,
 		db:       db,
-		interval: time.Duration(intervalSec) * time.Second,
+		interval: intervalFromSeconds(intervalSec),
 	}
 }
 

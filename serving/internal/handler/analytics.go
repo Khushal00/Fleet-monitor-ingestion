@@ -44,6 +44,9 @@ type AnalyticsSummaryResponse struct {
 func (h *AnalyticsHandler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 	fleetID := r.PathValue("fleet_id")
 	if fleetID == "" {
+		fleetID = r.URL.Query().Get("fleet_id")
+	}
+	if fleetID == "" {
 		writeError(w, http.StatusBadRequest, "fleet_id path parameter is required")
 		return
 	}

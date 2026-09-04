@@ -53,6 +53,13 @@ func (h *TelemetryHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if keyFleetID := fleetIDFromContext(r.Context()); keyFleetID == "" || keyFleetID != p.FleetID {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":"API key is not authorized for this fleet"}`))
+		return
+	}
+
 	raw, _ := json.Marshal(p)
 
 	msg := &domain.TelemetryMessage{

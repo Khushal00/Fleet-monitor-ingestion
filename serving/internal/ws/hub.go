@@ -32,7 +32,7 @@ type broadcastMsg struct {
 }
 
 type Authenticator interface {
-	Validate(ctx context.Context, apiKey string) bool
+	FleetID(ctx context.Context, apiKey string) (string, bool)
 }
 
 type Hub struct {
@@ -80,7 +80,8 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"fleet_id query parameter required"}`, http.StatusBadRequest)
 		return
 	}
-	if !h.authenticator.Validate(r.Context(), token) {
+	fleetForToken, ok := h.authenticator.FleetID(r.Context(), token)
+	if !ok || fleetForToken == "" || fleetForToken != fleetID {
 		http.Error(w, `{"error":"invalid or missing token"}`, http.StatusUnauthorized)
 		return
 	}
@@ -98,6 +99,8 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) addClient(ctx context.Context, client *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	fleet, exists := h.fleets[client.fleetID]
 	if !exists {
 		fleet = h.startFleetSubscriptions(ctx, client.fleetID)
@@ -108,6 +111,8 @@ func (h *Hub) addClient(ctx context.Context, client *Client) {
 }
 
 func (h *Hub) removeClient(client *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	fleet, exists := h.fleets[client.fleetID]
 	if !exists {
 		return
@@ -127,6 +132,8 @@ func (h *Hub) removeClient(client *Client) {
 }
 
 func (h *Hub) fanOut(msg broadcastMsg) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	fleet, exists := h.fleets[msg.fleetID]
 	if !exists {
 		return
@@ -141,6 +148,8 @@ func (h *Hub) fanOut(msg broadcastMsg) {
 }
 
 func (h *Hub) shutdown() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	for fleetID, fleet := range h.fleets {
 		fleet.cancel()
 		fleet.telemetrySub.Close()

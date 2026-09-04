@@ -1,0 +1,3 @@
+# Local service configuration can contain credentials.
+ingestion/.env
+serving/.env

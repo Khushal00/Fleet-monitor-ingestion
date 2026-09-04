@@ -16,9 +16,13 @@ type cacheEntry struct {
 
 type Authenticator struct {
 	localCache sync.Map
-	redis      *redis.Client
+	redis      redisGetter
 	ttl        time.Duration
 	staticKeys map[string]bool
+}
+
+type redisGetter interface {
+	Get(context.Context, string) *redis.StringCmd
 }
 
 type Config struct {

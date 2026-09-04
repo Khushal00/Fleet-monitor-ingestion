@@ -11,7 +11,11 @@ import (
 
 type StateWriter struct {
 	ch    <-chan *domain.TelemetryMessage
-	redis *store.RedisStore
+	redis stateStore
+}
+
+type stateStore interface {
+	PipelineStateUpdates(context.Context, []*domain.TelemetryMessage) error
 }
 
 func NewStateWriter(

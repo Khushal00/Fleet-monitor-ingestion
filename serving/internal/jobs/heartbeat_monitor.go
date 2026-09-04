@@ -26,7 +26,7 @@ func NewHeartbeatMonitor(rc *redis.Client, db *pgxpool.Pool, hub *ws.Hub, interv
 		redis:            rc,
 		db:               db,
 		hub:              hub,
-		interval:         time.Duration(intervalSec) * time.Second,
+		interval:         intervalFromSeconds(intervalSec),
 		defaultThreshold: time.Duration(thresholdSec) * time.Second,
 	}
 }

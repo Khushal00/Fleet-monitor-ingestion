@@ -1,6 +1,16 @@
 package jobs
 
-import "math"
+import (
+	"math"
+	"time"
+)
+
+func intervalFromSeconds(seconds int) time.Duration {
+	if seconds < 1 {
+		seconds = 1
+	}
+	return time.Duration(seconds) * time.Second
+}
 
 func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
 	const r = 6371.0

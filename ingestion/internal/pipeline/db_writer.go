@@ -7,22 +7,31 @@ import (
 
 	"fleet-monitor/ingestion/internal/domain"
 	"fleet-monitor/ingestion/internal/metrics"
-	"fleet-monitor/ingestion/internal/store"
 )
 
 type DBWriter struct {
 	ch        <-chan *domain.TelemetryMessage
-	db        *store.TimescaleStore
+	db        telemetryStore
 	batchSize int
 	flushMS   int
 }
 
+type telemetryStore interface {
+	BatchInsert(context.Context, []*domain.TelemetryMessage) error
+}
+
 func NewDBWriter(
 	ch <-chan *domain.TelemetryMessage,
-	db *store.TimescaleStore,
+	db telemetryStore,
 	batchSize int,
 	flushMS int,
 ) *DBWriter {
+	if batchSize < 1 {
+		batchSize = 1
+	}
+	if flushMS < 1 {
+		flushMS = 1
+	}
 	return &DBWriter{
 		ch:        ch,
 		db:        db,

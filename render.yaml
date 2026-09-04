@@ -1,0 +1,70 @@
+services:
+  - type: web
+    name: fleet-monitor-ingestion-demo
+    runtime: docker
+    rootDir: ingestion
+    dockerfilePath: ingestion/Dockerfile
+    dockerContext: ingestion
+    healthCheckPath: /health
+    envVars:
+      - key: HTTP_PORT
+        value: "10000"
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "5432"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: REDIS_ADDR
+        sync: false
+      - key: REDIS_PASSWORD
+        sync: false
+      - key: REDIS_DB
+        value: "0"
+      - key: VALID_API_KEYS
+        sync: false
+      - key: AUTH_CACHE_TTL_SECONDS
+        value: "300"
+
+  - type: web
+    name: fleet-monitor-serving-demo
+    runtime: docker
+    rootDir: serving
+    dockerfilePath: serving/Dockerfile
+    dockerContext: serving
+    healthCheckPath: /health
+    envVars:
+      - key: HTTP_PORT
+        value: "10000"
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "5432"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: REDIS_ADDR
+        sync: false
+      - key: REDIS_PASSWORD
+        sync: false
+      - key: REDIS_DB
+        value: "0"
+      - key: VALID_API_KEYS
+        sync: false
+      - key: AUTH_CACHE_TTL_SECONDS
+        value: "300"
+      - key: HEARTBEAT_INTERVAL_SECONDS
+        value: "30"
+      - key: STALENESS_THRESHOLD_SECONDS
+        value: "60"
+      - key: STOP_DETECTOR_INTERVAL_SECONDS
+        value: "30"
+      - key: DEVIATION_DETECTOR_INTERVAL_SECONDS
+        value: "60"

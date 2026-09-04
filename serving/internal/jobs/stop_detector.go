@@ -25,7 +25,7 @@ func NewStopDetector(rc *redis.Client, db *pgxpool.Pool, hub *ws.Hub, intervalSe
 		redis:    rc,
 		db:       db,
 		hub:      hub,
-		interval: time.Duration(intervalSec) * time.Second,
+		interval: intervalFromSeconds(intervalSec),
 	}
 }
 

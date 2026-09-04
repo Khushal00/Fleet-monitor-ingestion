@@ -83,11 +83,11 @@ func main() {
 
 	// ── Handlers ─────────────────────────────────────────────────────────────
 
-	healthHandler    := handler.NewHealthHandler(tsStore, redisStore)
+	healthHandler := handler.NewHealthHandler(tsStore, redisStore)
 	analyticsHandler := handler.NewAnalyticsHandler(redisStore.Client(), tsStore.Pool())
-	vehicleHandler   := handler.NewVehicleHandler(redisStore.Client(), tsStore.Pool())
-	alertHandler     := handler.NewAlertHandler(redisStore.Client(), tsStore.Pool())
-	tripHandler      := handler.NewTripHandler(redisStore.Client(), tsStore.Pool())
+	vehicleHandler := handler.NewVehicleHandler(redisStore.Client(), tsStore.Pool())
+	alertHandler := handler.NewAlertHandler(redisStore.Client(), tsStore.Pool())
+	tripHandler := handler.NewTripHandler(redisStore.Client(), tsStore.Pool())
 
 	mux := http.NewServeMux()
 
@@ -106,7 +106,11 @@ func main() {
 	)
 
 	mux.Handle("GET /api/v1/analytics/summary",
-		authMW(http.HandlerFunc(analyticsHandler.HandleSummary)))
+		authMW(
+			middleware.FleetScoped("fleet_id")(
+				http.HandlerFunc(analyticsHandler.HandleSummary),
+			),
+		))
 
 	mux.Handle("GET /api/v1/vehicles/{vehicle_id}/panel",
 		authMW(http.HandlerFunc(vehicleHandler.HandlePanel)))
@@ -163,7 +167,7 @@ func main() {
 }
 
 func whoamiHandler(w http.ResponseWriter, r *http.Request) {
-	apiKey  := middleware.APIKeyFromContext(r.Context())
+	apiKey := middleware.APIKeyFromContext(r.Context())
 	fleetID := middleware.FleetIDFromContext(r.Context())
 
 	keySource := "redis"
